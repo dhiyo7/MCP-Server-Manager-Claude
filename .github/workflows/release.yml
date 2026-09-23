@@ -1,10 +1,16 @@
 name: Build & Release
-
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag GitHub untuk release (contoh: v1.0.0)'
+        required: true
+        default: v1.0.0
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -51,9 +57,11 @@ jobs:
           done
           ls -la release/
       - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: release/*
-          generate_release_notes: true
+        run: |
+          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
+          echo "Creating release for tag: $TAG"
+          gh release create "$TAG" release/* \
+            --title "Release $TAG" \
+            --notes "MCP Server Manager - Cross-platform desktop tool for managing claude_desktop_config.json"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
