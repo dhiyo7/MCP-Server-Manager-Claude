@@ -1,0 +1,23 @@
+name: Build MCP Manager
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install pyinstaller
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --windowed --name mcp_manager mcp_manager.py
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp_manager-${{ matrix.os }}
+          path: dist/mcp_manager*

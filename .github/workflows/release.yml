@@ -1,0 +1,59 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install pyinstaller
+      - name: Build with PyInstaller
+        run: pyinstaller --onefile --windowed --name mcp_manager mcp_manager.py
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp_manager-${{ matrix.os }}
+          path: dist/mcp_manager*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for os in ubuntu-latest windows-latest macos-latest; do
+            src="artifacts/mcp_manager-${os}/mcp_manager"
+            case $os in
+              ubuntu-latest) ext="" ;;
+              windows-latest) ext=".exe" ;;
+              macos-latest) ext="" ;;
+            esac
+            if [ -f "${src}${ext}" ]; then
+              cp "${src}${ext}" "release/mcp_manager-${os}${ext}"
+            fi
+          done
+          ls -la release/
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
