@@ -62,28 +62,23 @@ jobs:
       - name: Create Release
         run: |
           TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
-          {
-            gh release create "$TAG" release/linux release/windows.exe release/macos \
-              --title "Release $TAG" \
-              --notes "$(cat <<'EOF'
-  MCP Server Manager - Cross-platform desktop tool.
+          gh release create "$TAG" release/* \
+            --title "Release $TAG" \
+            --notes "MCP Server Manager - Cross-platform desktop tool.
 
-  ### Panduan macOS:
-  Jika aplikasi diblokir oleh macOS (Gatekeeper):
-  1. Buka Terminal dan jalankan: 
-     `xattr -cr /path/to/mcp_manager-macos`
-  2. Jika masih gagal, buka System Settings > Privacy & Security dan pilih 'Open Anyway'.
-  3. Pastikan file memiliki izin eksekusi (`chmod +x /path/to/mcp_manager-macos`).
+          ### Panduan macOS:
+          Jika aplikasi diblokir oleh macOS (Gatekeeper):
+          1. Buka Terminal dan jalankan:
+             \`xattr -cr /path/to/mcp_manager-macos\`
+          2. Jika masih gagal, buka System Settings > Privacy & Security dan pilih 'Open Anyway'.
+          3. Pastikan file memiliki izin eksekusi (\`chmod +x /path/to/mcp_manager-macos\`).
 
-  ### Panduan Linux:
-  ```bash
-  chmod +x mcp_manager-linux && ./mcp_manager-linux
-  ```
+          ### Panduan Linux:
+          \`\`\`bash
+          chmod +x mcp_manager-linux && ./mcp_manager-linux
+          \`\`\`
 
-  ### Panduan Windows:
-  Double-click `mcp_manager-windows.exe` untuk menjalankan.
-  EOF
-          )"
-          }
+          ### Panduan Windows:
+          Double-click \`mcp_manager-windows.exe\` untuk menjalankan."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
