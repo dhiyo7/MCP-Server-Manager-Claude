@@ -42,6 +42,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -60,25 +61,22 @@ jobs:
           chmod +x release/mcp_manager-linux release/mcp_manager-macos
           ls -la release/
       - name: Create Release
-        run: |
-          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
-          gh release create "$TAG" release/* \
-            --title "Release $TAG" \
-            --notes "MCP Server Manager - Cross-platform desktop tool.
-
-          ### Panduan macOS:
-          Jika aplikasi diblokir oleh macOS (Gatekeeper):
-          1. Buka Terminal dan jalankan:
-             \`xattr -cr /path/to/mcp_manager-macos\`
-          2. Jika masih gagal, buka System Settings > Privacy & Security dan pilih 'Open Anyway'.
-          3. Pastikan file memiliki izin eksekusi (\`chmod +x /path/to/mcp_manager-macos\`).
-
-          ### Panduan Linux:
-          \`\`\`bash
-          chmod +x mcp_manager-linux && ./mcp_manager-linux
-          \`\`\`
-
-          ### Panduan Windows:
-          Double-click \`mcp_manager-windows.exe\` untuk menjalankan."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag || github.ref_name }}"
+          cat > /tmp/notes.md <<'NOTES'
+          MCP Server Manager - Cross-platform desktop tool.
+
+          ## Panduan macOS
+          1. Buka Terminal dan jalankan: xattr -cr /path/to/mcp_manager-macos
+          2. Jika masih gagal, buka System Settings > Privacy & Security dan pilih 'Open Anyway'.
+          3. Pastikan file memiliki izin eksekusi (chmod +x /path/to/mcp_manager-macos).
+
+          ## Panduan Linux
+          chmod +x mcp_manager-linux && ./mcp_manager-linux
+
+          ## Panduan Windows
+          Double-click mcp_manager-windows.exe untuk menjalankan.
+          NOTES
+          gh release create "$TAG" release/* --title "Release $TAG" --notes-file /tmp/notes.md
