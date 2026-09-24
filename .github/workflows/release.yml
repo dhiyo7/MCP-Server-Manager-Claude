@@ -23,6 +23,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-0 libnss3 libnspr4 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 libatspi2.0-0
       - name: Install dependencies
         run: pip install pyinstaller
       - name: Build with PyInstaller
@@ -37,7 +42,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -45,21 +49,15 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
+          declare -A EXTS=( [ubuntu-latest]="" [windows-latest]=".exe" [macos-latest]="" )
+          declare -A NAMES=( [ubuntu-latest]="linux" [windows-latest]="windows" [macos-latest]="macos" )
           for os in ubuntu-latest windows-latest macos-latest; do
-            src="artifacts/mcp_manager-${os}/mcp_manager"
-            case $os in
-              ubuntu-latest) ext="" ;;
-              windows-latest) ext=".exe" ;;
-              macos-latest) ext="" ;;
-            esac
-            if [ -f "${src}${ext}" ]; then
-              cp "${src}${ext}" "release/mcp_manager-${os}${ext}"
-              # macOS: ensure +x is preserved (GitHub artifact download strips it)
-              if [ "$os" = "macos-latest" ]; then
-                chmod +x "release/mcp_manager-${os}${ext}"
-              fi
+            src="artifacts/mcp_manager-${os}/mcp_manager${EXTS[$os]}"
+            if [ -f "${src}" ]; then
+              cp "${src}" "release/mcp_manager-${NAMES[$os]}${EXTS[$os]}"
             fi
           done
+          chmod +x release/mcp_manager-linux release/mcp_manager-macos
           ls -la release/
       - name: Create Release
         run: |
@@ -69,11 +67,16 @@ jobs:
             --title "Release $TAG" \
             --notes "MCP Server Manager - Cross-platform desktop tool.
 
-### Panduan macOS:
-Jika aplikasi diblokir oleh macOS (Gatekeeper):
-1. Buka Terminal dan jalankan: 
-   \`xattr -cr /path/to/mcp_manager\`
-2. Jika masih gagal, buka System Settings > Privacy & Security dan pilih 'Open Anyway'.
-3. Pastikan file memiliki izin eksekusi (\`chmod +x /path/to/mcp_manager\`)."
+  ### Panduan macOS:
+  Jika aplikasi diblokir oleh macOS (Gatekeeper):
+  1. Buka Terminal dan jalankan: 
+     \`xattr -cr /path/to/mcp_manager-macos\`
+  2. Jika masih gagal, buka System Settings > Privacy & Security dan pilih 'Open Anyway'.
+  3. Pastikan file memiliki izin eksekusi (\`chmod +x /path/to/mcp_manager-macos\`).
+
+  ### Panduan Linux:
+  \`\`\`bash
+  chmod +x mcp_manager-linux && ./mcp_manager-linux
+  \`\`\`"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
