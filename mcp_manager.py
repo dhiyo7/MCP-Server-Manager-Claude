@@ -79,33 +79,34 @@ def find_config_file():
         if os.path.isfile(path):
             return path
             
-    # 2. Windows Deep Search: if not found in standard paths, look into AppData subfolders
+    # 2. Windows Deep Search: cover standard + MSIX (Store) install
     if os_type == "windows":
-        search_roots = [
-            os.path.expandvars(r"%APPDATA%"),
-            os.path.expandvars(r"%LOCALAPPDATA%")
-        ]
-        # Common folder keywords for Claude
+        local_appdata = os.path.expandvars(r"%LOCALAPPDATA%")
+        appdata = os.path.expandvars(r"%APPDATA%")
         keywords = ["Claude", "AnthropicClaude", "claude-desktop"]
         
-        for root in search_roots:
+        # MSIX/Store path: Packages\Claude_xxx\LocalCache\Roaming\Claude\
+        packages_dir = os.path.join(local_appdata, "Packages")
+        if os.path.isdir(packages_dir):
+            for folder in os.listdir(packages_dir):
+                if folder.lower().startswith("claude"):
+                    msix_path = os.path.join(
+                        packages_dir, folder, "LocalCache", "Roaming", "Claude", CONFIG_FILENAME
+                    )
+                    if os.path.isfile(msix_path):
+                        return msix_path
+        
+        # General deep search (max depth 4)
+        for root in [appdata, local_appdata]:
             if not os.path.isdir(root):
                 continue
-            for folder in os.listdir(root):
-                if any(k.lower() in folder.lower() for k in keywords):
-                    full_folder = os.path.join(root, folder)
-                    if os.path.isdir(full_folder):
-                        # Check direct file or one level deeper
-                        target = os.path.join(full_folder, CONFIG_FILENAME)
-                        if os.path.isfile(target):
-                            return target
-                        # Search recursive (max depth 2)
-                        for sub in os.listdir(full_folder):
-                            sub_path = os.path.join(full_folder, sub)
-                            if os.path.isdir(sub_path):
-                                target = os.path.join(sub_path, CONFIG_FILENAME)
-                                if os.path.isfile(target):
-                                    return target
+            for dirpath, dirnames, filenames in os.walk(root):
+                depth = dirpath.replace(root, "").count(os.sep)
+                if depth >= 4:
+                    dirnames.clear()
+                    continue
+                if CONFIG_FILENAME in filenames:
+                    return os.path.join(dirpath, CONFIG_FILENAME)
     return None
 
 
