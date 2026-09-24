@@ -20,4 +20,18 @@ python3 mcp_manager.py
 Jika mendownload binary dari GitHub Release:
 - **Linux:** `chmod +x mcp_manager && ./mcp_manager`
 - **Windows:** Double-click `mcp_manager.exe`
-- **macOS:** Double-click `mcp_manager` (Izinkan di System Settings jika ada peringatan keamanan)
+- **macOS:**
+  - Double-click `mcp_manager` (Izinkan di System Settings jika ada peringatan keamanan)
+  - Jika muncul *"app is damaged"* atau file tidak dapat dibuka karena quarantine:
+    - Buka **Terminal** dan jalankan:
+      ```bash
+      xattr -cr /path/to/mcp_manager
+      ```
+    - Kemudian jalankan lagi dengan double-click.
+  - Jika muncul *"cannot be opened because the developer cannot be verified"*:
+    - Buka **System Settings > Privacy & Security**, lalu klik **Open Anyway**.
+  - Jika muncul *"permission denied"*:
+    - Buka **Terminal** dan jalankan:
+      ```bash
+      chmod +x /path/to/mcp_manager
+      ```

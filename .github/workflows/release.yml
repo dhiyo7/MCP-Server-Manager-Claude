@@ -54,6 +54,10 @@ jobs:
             esac
             if [ -f "${src}${ext}" ]; then
               cp "${src}${ext}" "release/mcp_manager-${os}${ext}"
+              # macOS: ensure +x is preserved (GitHub artifact download strips it)
+              if [ "$os" = "macos-latest" ]; then
+                chmod +x "release/mcp_manager-${os}${ext}"
+              fi
             fi
           done
           ls -la release/
@@ -63,6 +67,13 @@ jobs:
           echo "Creating release for tag: $TAG"
           gh release create "$TAG" release/* \
             --title "Release $TAG" \
-            --notes "MCP Server Manager - Cross-platform desktop tool for managing claude_desktop_config.json"
+            --notes "MCP Server Manager - Cross-platform desktop tool.
+
+### Panduan macOS:
+Jika aplikasi diblokir oleh macOS (Gatekeeper):
+1. Buka Terminal dan jalankan: 
+   \`xattr -cr /path/to/mcp_manager\`
+2. Jika masih gagal, buka System Settings > Privacy & Security dan pilih 'Open Anyway'.
+3. Pastikan file memiliki izin eksekusi (\`chmod +x /path/to/mcp_manager\`)."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

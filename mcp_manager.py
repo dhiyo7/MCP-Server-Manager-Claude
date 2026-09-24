@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-MCP Server Manager - Cross-platform desktop tool for managing claude_desktop_config.json
-Supports Windows, Linux, and macOS.
-
-Features:
-- Auto-detect (and auto-create) claude_desktop_config.json per OS
-- Add MCP by pasting JSON (single server config or full {"mcpServers": {...}} block)
-- Remove MCP server
-- Check MCP connection via stdio JSON-RPC initialize handshake
-- Restart Claude Desktop so config reloads
+MCP Server Manager - Modern dark-themed desktop tool
+Theme: Forest Green (#16a34a accent, #0f172a surface, #1e293b elevated)
+Supports Windows, Linux, macOS. Features:
+- Auto-detect/create claude_desktop_config.json per OS
+- Add/remove MCP server by pasting JSON
+- Check MCP stdio JSON-RPC connection
+- Restart Claude Desktop
 """
 
 import json
@@ -17,11 +15,24 @@ import shutil
 import subprocess
 import sys
 import threading
+import platform
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
 
-# === CONFIGURATION ===
+# === THEME COLORS (Forest Green Modern) ===
+BG_COLOR       = "#0f172a"   # background gelap
+SURFACE_COLOR  = "#1e293b"   # card/container
+ELEVATED_COLOR = "#273449"   # elevated card
+TEXT_COLOR     = "#f1f5f9"
+MUTED_COLOR    = "#94a3b8"
+ACCENT_COLOR   = "#16a34a"   # hijau toska
+ACCENT_HOVER   = "#15803d"
+ACCENT_LIGHT   = "#4ade80"
+SUCCESS_COLOR  = "#22c55e"
+ERROR_COLOR    = "#ef4444"
+BORDER_COLOR   = "#334155"
+
 CONFIG_FILENAME = "claude_desktop_config.json"
 
 # Known paths per OS (in order of priority)
@@ -59,11 +70,42 @@ def get_os_type():
 
 
 def find_config_file():
-    """Find claude_desktop_config.json on the system."""
-    paths = KNOWN_CONFIG_PATHS.get(get_os_type(), [])
+    """Find claude_desktop_config.json on the system with deep search for Windows."""
+    os_type = get_os_type()
+    paths = KNOWN_CONFIG_PATHS.get(os_type, [])
+    
+    # 1. Check known paths first
     for path in paths:
         if os.path.isfile(path):
             return path
+            
+    # 2. Windows Deep Search: if not found in standard paths, look into AppData subfolders
+    if os_type == "windows":
+        search_roots = [
+            os.path.expandvars(r"%APPDATA%"),
+            os.path.expandvars(r"%LOCALAPPDATA%")
+        ]
+        # Common folder keywords for Claude
+        keywords = ["Claude", "AnthropicClaude", "claude-desktop"]
+        
+        for root in search_roots:
+            if not os.path.isdir(root):
+                continue
+            for folder in os.listdir(root):
+                if any(k.lower() in folder.lower() for k in keywords):
+                    full_folder = os.path.join(root, folder)
+                    if os.path.isdir(full_folder):
+                        # Check direct file or one level deeper
+                        target = os.path.join(full_folder, CONFIG_FILENAME)
+                        if os.path.isfile(target):
+                            return target
+                        # Search recursive (max depth 2)
+                        for sub in os.listdir(full_folder):
+                            sub_path = os.path.join(full_folder, sub)
+                            if os.path.isdir(sub_path):
+                                target = os.path.join(sub_path, CONFIG_FILENAME)
+                                if os.path.isfile(target):
+                                    return target
     return None
 
 
@@ -166,6 +208,201 @@ INIT_REQUEST = json.dumps({
 })
 
 
+def install_nodejs_silent(status_callback=None):
+    """Download and silently install Node.js (Windows/macOS/Linux). Returns (bool, message)."""
+    os_type = get_os_type()
+
+    def update_status(text):
+        if status_callback:
+            status_callback(text)
+
+    if os_type == "windows":
+        import urllib.request
+        update_status("Mendownload Node.js installer (Windows)...")
+        arch = "arm64" if os.environ.get("PROCESSOR_ARCHITECTURE") == "ARM64" else "x64"
+        msi_url = f"https://nodejs.org/dist/v22.16.0/node-v22.16.0-win-{arch}.msi"
+        msi_path = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "nodejs_install.msi")
+
+        try:
+            urllib.request.urlretrieve(msi_url, msi_path)
+            update_status("Menginstall Node.js secara silent (mohon tunggu)...")
+            cmd = f'msiexec.exe /i "{msi_path}" /quiet /norestart'
+            res = subprocess.run(cmd, shell=True, capture_output=True, timeout=120)
+            if os.path.exists(msi_path):
+                os.remove(msi_path)
+            if res.returncode == 0:
+                return True, "Node.js berhasil terinstall secara otomatis!\nSilakan restart aplikasi jika command belum terbaca."
+            # MSI failed — offer portable zip as fallback
+            update_status("MSI gagal, coba portable Node.js...")
+            return _install_node_portable_windows(update_status)
+        except Exception as e:
+            # Try portable fallback on error
+            update_status(f"Fallback: portable Node.js...")
+            return _install_node_portable_windows(update_status)
+
+    elif os_type == "darwin":
+        update_status("Mengecek Homebrew...")
+        try:
+            if shutil.which("brew"):
+                update_status("Menginstall Node.js via Homebrew...")
+                res = subprocess.run(["brew", "install", "node"], capture_output=True, text=True, timeout=180)
+                if res.returncode == 0:
+                    return True, "Node.js berhasil terinstall via Homebrew!"
+                # brew install failed — offer direct download
+                update_status("Homebrew gagal, coba portable Node.js...")
+                return _install_node_portable_darwin(update_status)
+            # No brew — try direct download
+            update_status("Homebrew tidak ditemukan, coba portable Node.js...")
+            return _install_node_portable_darwin(update_status)
+        except Exception as e:
+            return False, f"Error: {e}"
+
+    else:
+        update_status("Mendeteksi package manager Linux...")
+        try:
+            if shutil.which("apt-get"):
+                pkg_mgr = "apt-get"
+                cmd = "sudo apt-get update -qq && sudo apt-get install -y -qq nodejs npm"
+            elif shutil.which("dnf"):
+                pkg_mgr = "dnf"
+                cmd = "sudo dnf install -y nodejs npm"
+            elif shutil.which("pacman"):
+                pkg_mgr = "pacman"
+                cmd = "sudo pacman -Sy --noconfirm nodejs npm"
+            elif shutil.which("zypper"):
+                pkg_mgr = "zypper"
+                cmd = "sudo zypper install -y nodejs npm"
+            else:
+                return False, "Package manager tidak terdeteksi. Install Node.js manual dari https://nodejs.org"
+
+            update_status(f"Menginstall Node.js via {pkg_mgr}...")
+            try:
+                res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=180)
+            except subprocess.TimeoutExpired:
+                return False, f"Instalasi {pkg_mgr} timeout. Coba install manual."
+
+            if res.returncode == 0:
+                return True, f"Node.js berhasil terinstall via {pkg_mgr}!"
+
+            # If sudo failed (likely password prompt or no tty), offer pkexec path
+            err_lower = (res.stderr + res.stdout).lower()
+            if "password" in err_lower or "tty" in err_lower or "sudo" in err_lower:
+                return False, (
+                    f"Instalasi {pkg_mgr} memerlukan password sudo.\n\n"
+                    f"Jalankan di terminal:\n{sudo_cmd_for(pkg_mgr)}\n\n"
+                    f"Atau install Node.js manual: https://nodejs.org"
+                )
+
+            return False, f"Gagal install via {pkg_mgr}:\n{res.stderr.strip()}"
+        except Exception as e:
+            return False, f"Error: {e}"
+
+
+def sudo_cmd_for(pkg_mgr):
+    """Return the sudo command to run manually in a terminal."""
+    if pkg_mgr == "apt-get":
+        return "sudo apt-get update && sudo apt-get install -y nodejs npm"
+    elif pkg_mgr == "dnf":
+        return "sudo dnf install -y nodejs npm"
+    elif pkg_mgr == "pacman":
+        return "sudo pacman -Sy nodejs npm"
+    elif pkg_mgr == "zypper":
+        return "sudo zypper install -y nodejs npm"
+    return "sudo apt-get install -y nodejs npm"
+
+
+def install_nodejs_with_pkexec(pkg_mgr):
+    """Try installing Node.js via pkexec (Linux, no password prompt in GUI).
+    Returns (bool, message)."""
+    cmd_map = {
+        "apt-get": "sudo apt-get update -qq && sudo apt-get install -y -qq nodejs npm",
+        "dnf": "sudo dnf install -y nodejs npm",
+        "pacman": "sudo pacman -Sy --noconfirm nodejs npm",
+        "zypper": "sudo zypper install -y nodejs npm",
+    }
+    if pkg_mgr not in cmd_map:
+        return False, f"Package manager '{pkg_mgr}' tidak didukung oleh pkexec."
+    try:
+        res = subprocess.run(
+            ["pkexec", "bash", "-c", cmd_map[pkg_mgr]],
+            capture_output=True, text=True, timeout=180
+        )
+        if res.returncode == 0:
+            return True, f"Node.js berhasil terinstall via pkexec!"
+        return False, f"pkexec install gagal:\n{res.stderr.strip()}"
+    except FileNotFoundError:
+        return False, "pkexec tidak ditemukan. Install dengan: sudo apt-get install pkexec"
+    except subprocess.TimeoutExpired:
+        return False, "Instalasi pkexec timeout."
+    except Exception as e:
+        return False, f"pkexec error: {e}"
+
+
+def _install_node_portable_windows(update_status=None):
+    """Install portable Node.js in the user's temp directory if MSI fails."""
+    import urllib.request
+
+    arch = "arm64" if os.environ.get("PROCESSOR_ARCHITECTURE") == "ARM64" else "x64"
+    version = "22.16.0"
+    zip_url = f"https://nodejs.org/dist/v{version}/node-v{version}-win-{arch}.zip"
+    zip_path = os.path.join(os.environ.get("TEMP", "C:\\Temp"), f"node-v{version}-win-{arch}.zip")
+    extract_dir = os.path.join(os.environ.get("TEMP", "C:\\Temp"), f"node-v{version}-win-{arch}")
+
+    try:
+        update_status("Mendownload Node.js portable...")
+        urllib.request.urlretrieve(zip_url, zip_path)
+        import zipfile
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(extract_dir)
+        os.remove(zip_path)
+        return True, f"Node.js portable berhasil diinstal di: {extract_dir}\nTambahkan folder bin ke PATH."
+    except Exception as e:
+        return False, f"Portable Node.js gagal diinstal: {e}"
+
+
+def _install_node_portable_darwin(update_status=None):
+    """Install portable Node.js in the user's temp directory if Homebrew fails."""
+    import urllib.request
+    import tarfile
+
+    machine = "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "x64"
+    version = "22.16.0"
+    url = f"https://nodejs.org/dist/v{version}/node-v{version}-darwin-{machine}.tar.xz"
+    tar_path = os.path.join(os.path.expanduser("~"), f"node-v{version}-darwin-{machine}.tar.xz")
+
+    try:
+        update_status("Mendownload Node.js portable...")
+        urllib.request.urlretrieve(url, tar_path)
+        extract_dir = os.path.join(os.path.expanduser("~"), f"node-v{version}-darwin-{machine}")
+        os.makedirs(extract_dir, exist_ok=True)
+        with tarfile.open(tar_path, "r:xz") as archive:
+            archive.extractall(extract_dir)
+        os.remove(tar_path)
+        return True, f"Node.js portable berhasil diinstal di: {extract_dir}\nTambahkan folder bin ke PATH."
+    except Exception as e:
+        return False, f"Portable Node.js gagal diinstal: {e}"
+
+
+def refresh_path_for_new_node():
+    """Clear cached PATH lookups so node/npx changes are picked up in this process."""
+    import importlib
+    if sys.platform == "win32":
+        # Re-read PATH from parent registry (Windows resolves node path here)
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(32768)
+            size = ctypes.windll.advapi32.GetEnvironmentVariableW("PATH", buf, 32768)
+            if size > 0 and size <= 32768:
+                os.environ["PATH"] = buf.value
+        except Exception:
+            pass
+    # On all platforms, re-expand env vars
+    os.environ["PATH"] = os.path.expandvars(os.environ["PATH"])
+    # bust any cached executable lookups (Python 3.10+)
+    if hasattr(shutil, "which"):
+        shutil.which.cache_clear() if hasattr(shutil.which, "cache_clear") else None
+
+
 def check_mcp_connection(entry, timeout=60):
     """Run stdio initialize handshake against an MCP server. Returns (ok, detail)."""
     if "url" in entry:
@@ -178,24 +415,14 @@ def check_mcp_connection(entry, timeout=60):
     env = {**os.environ, **{str(k): str(v) for k, v in entry.get("env", {}).items()}}
 
     # 1. Pre-check: node/npx availability
+    node_missing = False
     if cmd[0] == "npx" and not shutil.which("npx"):
-        return False, (
-            "npx tidak ditemukan.\n"
-            "Pastikan Node.js (>=18) sudah terinstall.\n"
-            "Download: https://nodejs.org"
-        )
-    if cmd[0] == "node" and not shutil.which("node"):
-        return False, (
-            "node tidak ditemukan.\n"
-            "Pastikan Node.js (>=18) sudah terinstall.\n"
-            "Download: https://nodejs.org"
-        )
-    if shutil.which("node") is None and not shutil.which("npx"):
-        return False, (
-            "Node.js tidak ditemukan.\n"
-            "Pastikan Node.js (>=18) sudah terinstall.\n"
-            "Download: https://nodejs.org"
-        )
+        node_missing = True
+    elif cmd[0] == "node" and not shutil.which("node"):
+        node_missing = True
+
+    if node_missing:
+        return False, "NODE_MISSING"
 
     # 2. Add -y to npx commands if missing to avoid interactive prompts
     final_cmd = list(cmd)
@@ -224,11 +451,23 @@ def check_mcp_connection(entry, timeout=60):
     # 3. Polling loop: monitor stderr early for server errors, then send init
     import time
     import select
+    
     response_data = b""
     err_data = b""
     request_sent = False
     start = time.time()
     deadline = start + timeout
+
+    # Set non-blocking on pipes so we never hang
+    if sys.platform != "win32":
+        import fcntl
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe and hasattr(pipe, "fileno"):
+                try:
+                    flags = fcntl.fcntl(pipe.fileno(), fcntl.F_GETFL)
+                    fcntl.fcntl(pipe.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                except Exception:
+                    pass
 
     try:
         while time.time() < deadline:
@@ -236,12 +475,15 @@ def check_mcp_connection(entry, timeout=60):
             if proc.poll() is not None and not request_sent:
                 break
 
-            # Read stderr continuously to catch server errors early
+            # Read stderr (non-blocking) to catch server errors early
             try:
                 if sys.platform != "win32":
-                    ready, _, _ = select.select([proc.stderr], [], [], 0.1)
+                    ready, _, _ = select.select([proc.stderr], [], [], 0.05)
                     if ready:
-                        chunk = proc.stderr.read1(4096)
+                        try:
+                            chunk = proc.stderr.read(4096)
+                        except (BlockingIOError, IOError):
+                            chunk = b""
                         if chunk:
                             err_data += chunk
                             err_peek = err_data.decode(errors="replace").lower()
@@ -274,16 +516,18 @@ def check_mcp_connection(entry, timeout=60):
                 except (BrokenPipeError, OSError):
                     break
 
-            # Read stdout (non-blocking on POSIX, best-effort on Windows)
+            # Read stdout (non-blocking)
             try:
                 if sys.platform != "win32":
-                    ready, _, _ = select.select([proc.stdout], [], [], 0.5)
+                    ready, _, _ = select.select([proc.stdout], [], [], 0.05)
                     if ready:
-                        chunk = proc.stdout.read1(4096)
+                        try:
+                            chunk = proc.stdout.read(4096)
+                        except (BlockingIOError, IOError):
+                            chunk = b""
                         if chunk:
                             response_data += chunk
                 else:
-                    # Windows: read with timeout via communicate-like approach
                     try:
                         chunk = proc.stdout.read(4096)
                         if chunk:
@@ -313,7 +557,7 @@ def check_mcp_connection(entry, timeout=60):
                         proc.kill()
                         return False, f"Server menolak handshake: {resp['error'].get('message', resp['error'])}"
 
-            time.sleep(0.2)
+            time.sleep(0.05)
     finally:
         try:
             if proc.poll() is None:
@@ -409,84 +653,309 @@ class MCPManagerApp:
     def __init__(self):
         self.config_path = None
         self.config_data = None
+        self.selected_server = None
+        self.server_statuses = {}
+        self.checking = False
 
         self.root = tk.Tk()
         self.root.title("MCP Server Manager")
-        self.root.geometry("780x720")
+        self.root.geometry("1100x700")
+        self.root.minsize(760, 500)
         self.root.resizable(True, True)
         try:
             ttk.Style().theme_use("clam")
         except Exception:
             pass
 
+        self.name_var = tk.StringVar()  # after root exists
+
         self.build_ui()
         self.status_var.set("Klik 'Auto-Detect' untuk mencari / membuat config.")
 
     def build_ui(self):
-        # === Top: Config Path ===
-        top = ttk.Frame(self.root, padding=(10, 5))
-        top.pack(fill="x")
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
 
-        ttk.Label(top, text="Config File:", font=("Arial", 10, "bold")).pack(side="left")
+        self.root.configure(bg=BG_COLOR)
+        style.configure("TLabel", font=("Poppins", 10), background=BG_COLOR, foreground=TEXT_COLOR)
+        style.configure("TButton", font=("Poppins", 10, "bold"))
+        style.configure("Accent.TButton", foreground="white", background=ACCENT_COLOR)
+        style.map("Accent.TButton", background=[("active", ACCENT_HOVER)])
+        style.configure("TNotebook", background=BG_COLOR, borderwidth=0)
+        style.configure("TNotebook.Tab", font=("Poppins", 10), padding=[10, 4])
+        style.configure("Treeview", background=SURFACE_COLOR, foreground=TEXT_COLOR,
+                        fieldbackground=SURFACE_COLOR, font=("Poppins", 10))
+        style.configure("Treeview.Heading", background=ELEVATED_COLOR, foreground=ACCENT_LIGHT,
+                        font=("Poppins", 10, "bold"))
+        style.map("Treeview", background=[("selected", "#14532d")],
+                  foreground=[("selected", "white")])
+
+        # Split panes keep the server list and JSON editor usable at any window size.
+        main_pane = tk.PanedWindow(self.root, orient="horizontal", bg=BG_COLOR,
+                                    sashwidth=4, sashrelief="flat")
+        main_pane.pack(fill="both", expand=True)
+
+        # --- Server list pane ---
+        left_frame = tk.Frame(main_pane, bg=BG_COLOR)
+        main_pane.add(left_frame, width=390)
+
+        top_bar = tk.Frame(left_frame, bg=ELEVATED_COLOR, relief="flat", height=50)
+        top_bar.pack(fill="x", padx=0, pady=(0, 0))
+        top_bar.pack_propagate(False)
+        tk.Label(top_bar, text="MCP Server Manager", font=("Poppins", 13, "bold"),
+                 fg=ACCENT_LIGHT, bg=ELEVATED_COLOR).pack(side="left", padx=14, pady=10)
         self.path_var = tk.StringVar()
-        ttk.Entry(top, textvariable=self.path_var).pack(side="left", padx=5, fill="x", expand=True)
-        ttk.Button(top, text="Auto-Detect", command=self.auto_detect).pack(side="left")
-        ttk.Button(top, text="Browse...", command=self.browse_config).pack(side="left", padx=5)
+        tk.Label(top_bar, textvariable=self.path_var, font=("Poppins", 8),
+                 fg=MUTED_COLOR, bg=ELEVATED_COLOR, anchor="w").pack(side="left",
+                                                                      padx=8, pady=8,
+                                                                      fill="x", expand=True)
+        self._btn(top_bar, "Auto-Detect", self.auto_detect, ACCENT_COLOR, "white",
+                  pack_side="right", padx=(0, 5))
+        self._btn(top_bar, "Browse", self.browse_config, "#0f172a", ACCENT_COLOR,
+                  pack_side="right", padx=(0, 5))
 
-        # === Server List ===
-        list_frame = ttk.LabelFrame(self.root, text="Existing MCP Servers", padding=10)
-        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        list_card = tk.Frame(left_frame, bg=ELEVATED_COLOR, relief="flat",
+                             highlightbackground=BORDER_COLOR, highlightthickness=1)
+        list_card.pack(fill="both", expand=True, padx=10, pady=10)
 
-        columns = ("name", "command", "type")
-        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=7)
+        list_header = tk.Frame(list_card, bg=ELEVATED_COLOR)
+        list_header.pack(fill="x", padx=12, pady=(12, 6))
+        tk.Label(list_header, text="Servers", font=("Poppins", 12, "bold"),
+                 fg=TEXT_COLOR, bg=ELEVATED_COLOR).pack(side="left")
+        self._btn(list_header, "+ Add", self._open_add_dialog, ACCENT_COLOR, "white",
+                  pack_side="right")
+
+        tree_container = tk.Frame(list_card, bg=ELEVATED_COLOR)
+        tree_container.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        columns = ("name", "command", "type", "status")
+        self.tree = ttk.Treeview(tree_container, columns=columns, show="tree headings",
+                                  height=10, selectmode="browse")
+        self.tree.heading("#0", text="")
         self.tree.heading("name", text="Name")
         self.tree.heading("command", text="Command / URL")
         self.tree.heading("type", text="Type")
-        self.tree.column("name", width=180)
-        self.tree.column("command", width=360)
-        self.tree.column("type", width=90)
+        self.tree.heading("status", text="Status")
+        self.tree.column("#0", width=0, minwidth=0, stretch=False)
+        self.tree.column("name", width=115, minwidth=75)
+        self.tree.column("command", width=190, minwidth=90)
+        self.tree.column("type", width=65, minwidth=50, anchor="center")
+        self.tree.column("status", width=75, minwidth=60, anchor="center")
+        self.tree.tag_configure("remote", foreground=MUTED_COLOR)
+        self.tree.tag_configure("stdio", foreground=TEXT_COLOR)
+        self.tree.tag_configure("ok", foreground=SUCCESS_COLOR)
+        self.tree.tag_configure("fail", foreground=ERROR_COLOR)
 
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        tree_scroll.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
-        tree_btn = ttk.Frame(list_frame)
-        tree_btn.pack(fill="x", pady=(8, 0))
-        ttk.Button(tree_btn, text="Check Connection", command=self.check_selected).pack(side="left")
-        ttk.Button(tree_btn, text="Remove Selected", command=self.remove_selected).pack(side="left", padx=5)
+        action_bar = tk.Frame(list_card, bg=ELEVATED_COLOR)
+        action_bar.pack(fill="x", padx=12, pady=(0, 12))
+        self._btn(action_bar, "Check Connection", self.check_selected, ACCENT_COLOR, "white",
+                  pack_side="left", padx=(0, 6))
+        self._btn(action_bar, "Refresh", self.refresh_statuses, "#475569", TEXT_COLOR,
+                  pack_side="left", padx=(0, 6))
+        self._btn(action_bar, "Remove", self.remove_selected, "#dc2626", "white", pack_side="right")
 
-        # === Add Form: Name + JSON ===
-        add_frame = ttk.LabelFrame(
-            self.root, text="Add MCP Server (paste JSON dari dokumentasi, ganti token)", padding=10)
-        add_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        # --- JSON editor pane ---
+        right_frame = tk.Frame(main_pane, bg=BG_COLOR)
+        main_pane.add(right_frame, width=710)
 
-        ttk.Label(add_frame, text="Name:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        self.name_var = tk.StringVar()
-        ttk.Entry(add_frame, textvariable=self.name_var, width=40).grid(
-            row=0, column=1, sticky="ew", padx=5, pady=2)
-        ttk.Label(add_frame, text="(opsional jika JSON sudah berisi nama)").grid(
-            row=0, column=2, sticky="w")
+        editor_card = tk.Frame(right_frame, bg=ELEVATED_COLOR, relief="flat",
+                                highlightbackground=BORDER_COLOR, highlightthickness=1)
+        editor_card.pack(fill="both", expand=True, padx=10, pady=10)
 
-        ttk.Label(add_frame, text="Server JSON:").grid(row=1, column=0, sticky="nw", padx=5, pady=2)
-        self.json_text = tk.Text(add_frame, height=8, width=60, wrap="word",
-                                 font=("Consolas" if sys.platform == "win32" else "Monospace", 10))
-        self.json_text.grid(row=1, column=1, columnspan=2, sticky="nsew", padx=5, pady=2)
+        editor_header = tk.Frame(editor_card, bg=ELEVATED_COLOR)
+        editor_header.pack(fill="x", padx=15, pady=(12, 6))
+        tk.Label(editor_header, text="Server JSON", font=("Poppins", 12, "bold"),
+                 fg=TEXT_COLOR, bg=ELEVATED_COLOR).pack(side="left")
+        self.json_server_label = tk.Label(editor_header, text="(pilih server di kiri)",
+                                          font=("Poppins", 9, "italic"),
+                                          fg=MUTED_COLOR, bg=ELEVATED_COLOR)
+        self.json_server_label.pack(side="right")
 
-        add_frame.columnconfigure(1, weight=1)
-        add_frame.rowconfigure(1, weight=1)
+        json_frame = tk.Frame(editor_card, bg=ELEVATED_COLOR)
+        json_frame.pack(fill="both", expand=True, padx=15, pady=(0, 6))
+        self.json_text = tk.Text(json_frame, wrap="word",
+                                  font=("Consolas" if sys.platform == "win32" else "Monospace", 10),
+                                  bg=SURFACE_COLOR, fg=TEXT_COLOR, insertbackground=ACCENT_COLOR,
+                                  relief="flat", borderwidth=1, highlightthickness=1,
+                                  highlightbackground=BORDER_COLOR, padx=10, pady=10)
+        self.json_text.pack(side="left", fill="both", expand=True)
+        json_scroll = ttk.Scrollbar(json_frame, orient="vertical", command=self.json_text.yview)
+        self.json_text.configure(yscrollcommand=json_scroll.set)
+        json_scroll.pack(side="right", fill="y", padx=(5, 0))
 
-        btn_frame = ttk.Frame(add_frame)
-        btn_frame.grid(row=2, column=0, columnspan=3, pady=8)
-        ttk.Button(btn_frame, text="Add MCP", command=self.add_mcp).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Clear Form", command=self.clear_form).pack(side="left", padx=5)
-        ttk.Button(btn_frame, text="Restart Claude Desktop", command=self.restart_claude).pack(
-            side="left", padx=25)
+        editor_footer = tk.Frame(editor_card, bg=ELEVATED_COLOR)
+        editor_footer.pack(fill="x", padx=15, pady=(0, 15))
+        self._btn(editor_footer, "Save Changes", self.save_json_edits, ACCENT_COLOR, "white",
+                  pack_side="left", padx=(0, 8))
+        self._btn(editor_footer, "Clear", self.clear_json, "#475569", TEXT_COLOR,
+                  pack_side="left", padx=(0, 8))
+        self._btn(editor_footer, "Check Connection", self.check_selected, "#0ea5e9", "white",
+                  pack_side="left", padx=(0, 8))
+        self._btn(editor_footer, "Restart Claude", self.restart_claude, "#7c3aed", "white",
+                  pack_side="right")
 
-        # === Status Bar ===
-        self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(self.root, textvariable=self.status_var, relief="sunken", anchor="w").pack(
-            fill="x", side="bottom", padx=10, pady=5)
+        # --- Status bar ---
+        status_bar = tk.Frame(self.root, bg=ELEVATED_COLOR, height=36,
+                              highlightbackground=BORDER_COLOR, highlightthickness=1)
+        status_bar.pack(fill="x", side="bottom")
+        status_bar.pack_propagate(False)
+        self.progress_bar = ttk.Progressbar(status_bar, mode="indeterminate", length=100)
+        self.progress_bar.pack(side="right", padx=10, pady=5)
+        self.status_var = tk.StringVar(value="Klik 'Auto-Detect' untuk mencari / membuat config.")
+        tk.Label(status_bar, textvariable=self.status_var, font=("Helvetica", 9),
+                 fg=MUTED_COLOR, bg=ELEVATED_COLOR).pack(side="left", padx=15, pady=5)
+
+    def _btn(self, parent, text, command, bg, fg, pack_side="left", padx=(0, 0)):
+        btn = tk.Button(parent, text=f" {text}", command=command,
+                        font=("Helvetica", 9, "bold"), bg=bg, fg=fg,
+                        activebackground=ACCENT_HOVER if bg == ACCENT_COLOR else "#475569",
+                        activeforeground="white", relief="flat", borderwidth=0,
+                        cursor="hand2", padx=12, pady=5)
+        btn.pack(side=pack_side, padx=padx, pady=2)
+        return btn
+
+    def _icon_btn(self, parent, text, command, bg, fg, pack_side="left", padx=(0, 0)):
+        return self._btn(parent, text, command, bg, fg, pack_side, padx)
+
+    def _on_tree_select(self, event=None):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        item = self.tree.item(selection[0])
+        name = str(item["values"][0])
+        entry = self.config_data.get("mcpServers", {}).get(name)
+        if not entry:
+            return
+        self.selected_server = name
+        self.json_server_label.config(text=name)
+        self.json_text.delete("1.0", "end")
+        self.json_text.insert("1.0", json.dumps(entry, indent=2, ensure_ascii=False))
+
+    def refresh_server_list(self):
+        self.tree.delete(*self.tree.get_children())
+        for name, entry in self.config_data.get("mcpServers", {}).items():
+            if "url" in entry:
+                cmd, typ = entry["url"], "remote"
+            else:
+                cmd, typ = entry.get("command", ""), "stdio"
+            status = self.server_statuses.get(name, "—")
+            tag = "ok" if status == "TERSAMBUNG" else "fail" if status == "GAGAL" else "stdio"
+            self.tree.insert("", "end", values=(name, cmd, typ, status), tags=(tag,))
+
+    def _open_add_dialog(self):
+        if not self.config_data:
+            self.status_var.set("Load config dulu (Auto-Detect atau Browse).")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add MCP Server")
+        dialog.geometry("520x520")
+        dialog.configure(bg=BG_COLOR)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Server Name (opsional)", bg=BG_COLOR, fg=TEXT_COLOR,
+                 font=("Helvetica", 9)).pack(anchor="w", padx=15, pady=(15, 5))
+        name_var = tk.StringVar()
+        tk.Entry(dialog, textvariable=name_var, font=("Helvetica", 10),
+                 bg=SURFACE_COLOR, fg=TEXT_COLOR, insertbackground=ACCENT_COLOR,
+                 relief="flat", highlightthickness=1, highlightbackground=BORDER_COLOR
+                 ).pack(fill="x", padx=15, pady=(0, 10))
+        tk.Label(dialog, text="Server JSON", bg=BG_COLOR, fg=TEXT_COLOR,
+                 font=("Helvetica", 9)).pack(anchor="w", padx=15, pady=(5, 5))
+        json_text = tk.Text(dialog, height=15, wrap="word",
+                            font=("Consolas", 10), bg=SURFACE_COLOR, fg=TEXT_COLOR,
+                            insertbackground=ACCENT_COLOR, relief="flat",
+                            borderwidth=1, highlightthickness=1, highlightbackground=BORDER_COLOR)
+        json_text.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+
+        def do_add():
+            name = name_var.get().strip()
+            json_str = json_text.get("1.0", "end").strip()
+            if not json_str:
+                messagebox.showwarning("Validation", "Server JSON wajib diisi.")
+                return
+            try:
+                name, entry = parse_pasted_server(name, json_str)
+            except ValueError as e:
+                messagebox.showwarning("JSON Error", str(e))
+                return
+            success, msg = add_mcp_server(self.config_data, name, entry)
+            if not success and not messagebox.askyesno("Duplicate", msg + "\n\nTimpa yang lama?"):
+                return
+            self.config_data["mcpServers"][name] = entry
+            try:
+                backup = save_config(self.config_path, self.config_data)
+            except Exception as e:
+                messagebox.showerror("Error", f"Gagal menyimpan config:\n{e}")
+                return
+            self.refresh_server_list()
+            dialog.destroy()
+            self.status_var.set(f"Added '{name}' | Backup: {os.path.basename(backup)}")
+            if messagebox.askyesno("Sukses", f"MCP '{name}' ditambahkan!\n\nCek koneksi sekarang?"):
+                self.check_server(name)
+
+        self._btn(dialog, "Add MCP", do_add, ACCENT_COLOR, "white", pack_side="right", padx=(0, 10))
+        self._btn(dialog, "Cancel", dialog.destroy, "#475569", TEXT_COLOR, pack_side="right")
+
+    def save_json_edits(self):
+        if not self.config_data:
+            messagebox.showwarning("No Config", "Load config dulu (Auto-Detect atau Browse).")
+            return
+        json_str = self.json_text.get("1.0", "end").strip()
+        if not json_str:
+            messagebox.showwarning("Validation", "Server JSON wajib diisi.")
+            return
+        try:
+            entry = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            messagebox.showwarning("JSON Error", f"JSON tidak valid: {e}")
+            return
+        if not isinstance(entry, dict) or ("command" not in entry and "url" not in entry):
+            messagebox.showwarning("Validation", 'Server config harus memiliki "command" atau "url".')
+            return
+        if self.selected_server:
+            name = self.selected_server
+            self.config_data["mcpServers"][name] = entry
+        else:
+            name = None
+            try:
+                name, entry = parse_pasted_server("", json_str)
+            except ValueError as e:
+                messagebox.showwarning("JSON Error", str(e))
+                return
+            if name in self.config_data.get("mcpServers", {}):
+                if not messagebox.askyesno("Duplicate", f"MCP server '{name}' sudah ada!\n\nTimpa yang lama?"):
+                    return
+            self.config_data.setdefault("mcpServers", {})[name] = entry
+            self.selected_server = name
+        try:
+            backup = save_config(self.config_path, self.config_data)
+        except Exception as e:
+            messagebox.showerror("Error", f"Gagal menyimpan config:\n{e}")
+            return
+        self.refresh_server_list()
+        self.json_server_label.config(text=name)
+        self.status_var.set(f"Saved '{name}' | Backup: {os.path.basename(backup)}")
+
+    def clear_json(self):
+        self.json_text.delete("1.0", "end")
+        self.json_server_label.config(text="(pilih server di kiri)")
+        self.selected_server = None
+
+    # --- Config loading ---
+
+    def refresh_statuses(self):
+        """Clear and reload server list (used for refresh)."""
+        if self.config_data:
+            self.refresh_server_list()
 
     # --- Config loading ---
     def load_config_from_path(self, path):
@@ -528,58 +997,12 @@ class MCPManagerApp:
             except Exception as e:
                 messagebox.showerror("Error", f"Gagal membuat config:\n{e}")
 
-    # --- Server list ---
-    def refresh_server_list(self):
-        self.tree.delete(*self.tree.get_children())
-        for name, entry in self.config_data.get("mcpServers", {}).items():
-            if "url" in entry:
-                cmd, typ = entry["url"], "remote"
-            else:
-                cmd, typ = entry.get("command", ""), "stdio"
-            self.tree.insert("", "end", values=(name, cmd, typ))
-
     def _selected_name(self):
         selection = self.tree.selection()
         if not selection:
             messagebox.showwarning("Pilih Server", "Pilih salah satu MCP server di daftar dulu.")
             return None
         return str(self.tree.item(selection[0])["values"][0])
-
-    # --- Add / Remove ---
-    def add_mcp(self):
-        if not self.config_data:
-            messagebox.showwarning("No Config", "Load config dulu (Auto-Detect atau Browse).")
-            return
-        name = self.name_var.get().strip()
-        json_str = self.json_text.get("1.0", "end").strip()
-        if not json_str:
-            messagebox.showwarning("Validation", "Server JSON wajib diisi.")
-            return
-        try:
-            name, entry = parse_pasted_server(name, json_str)
-        except ValueError as e:
-            messagebox.showwarning("JSON Error", str(e))
-            return
-
-        success, msg = add_mcp_server(self.config_data, name, entry)
-        if not success:
-            if not messagebox.askyesno("Duplicate", msg + "\n\nTimpa yang lama?"):
-                return
-            self.config_data["mcpServers"][name] = entry
-        try:
-            backup = save_config(self.config_path, self.config_data)
-        except Exception as e:
-            messagebox.showerror("Error", f"Gagal menyimpan config:\n{e}")
-            return
-        self.refresh_server_list()
-        self.clear_form()
-        self.status_var.set(f"Added '{name}' | Backup: {os.path.basename(backup)}")
-        if messagebox.askyesno(
-                "Sukses",
-                f"MCP '{name}' ditambahkan!\n\n"
-                f"Backup: {backup}\n\n"
-                f"Cek koneksi sekarang?"):
-            self.check_server(name)
 
     def remove_selected(self):
         if not self.config_data:
@@ -606,25 +1029,102 @@ class MCPManagerApp:
             self.check_server(name)
 
     def check_server(self, name):
+        # Guard: only one check at a time, prevent resource exhaustion
+        if getattr(self, "checking", False):
+            messagebox.showwarning("Check in Progress", "Sedang checking satu server saja.\nTunggu sampai selesai dulu.")
+            return
         entry = self.config_data.get("mcpServers", {}).get(name)
         if not entry:
             messagebox.showwarning("Not Found", f"Server '{name}' tidak ada di config.")
             return
+        self.checking = True
         self.status_var.set(f"Checking '{name}' ... (mohon tunggu, first-run npx bisa lama)")
         self.root.config(cursor="watch")
 
         def worker():
             ok, detail = check_mcp_connection(entry)
+            self.checking = False
             self.root.after(0, lambda: self._check_done(name, ok, detail))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _check_done(self, name, ok, detail):
+        self._install_retries = 0
         self.root.config(cursor="")
+        if detail == "NODE_MISSING":
+            result = messagebox.askyesno(
+                "Node.js Belum Terinstal",
+                f"MCP '{name}' membutuhkan Node.js, tetapi Node.js tidak ditemukan di komputer Anda.\n\n"
+                f"Apakah ingin menginstall Node.js secara otomatis?\n\n"
+                f"(Windows: download MSI installer\n"
+                f"macOS: install via Homebrew\n"
+                f"Linux: install via package manager)"
+            )
+            if not result:
+                self.server_statuses[name] = "GAGAL"
+                self.refresh_server_list()
+                self.status_var.set(f"[{name}] GAGAL - Node.js tidak ada")
+                return
+
+            self.status_var.set("Menginstall Node.js... (mohon tunggu)")
+            self.root.config(cursor="watch")
+
+            def install_worker():
+                success, msg = install_nodejs_silent(status_callback=self._update_install_status)
+                self.root.after(0, lambda: self._install_done(name, success, msg))
+
+            threading.Thread(target=install_worker, daemon=True).start()
+            return
+
         status = "TERSAMBUNG" if ok else "GAGAL"
+        self.server_statuses[name] = status
+        self.refresh_server_list()
         self.status_var.set(f"[{name}] {status}")
         (messagebox.showinfo if ok else messagebox.showerror)(
             f"Connection Check: {status}", f"MCP: {name}\n\n{detail}")
+
+    def _update_install_status(self, text):
+        self.status_var.set(text)
+
+    def _install_done(self, name, success, msg):
+        self.root.config(cursor="")
+        if success:
+            from mcp_manager import refresh_path_for_new_node
+            refresh_path_for_new_node()
+            self.status_var.set(f"Node.js terinstal! Mengecek koneksi '{name}'...")
+            self.root.after(1000, lambda: self.check_server(name))
+            return
+
+        # Linux fallback: try pkexec once if sudo failed in install_nodejs_silent
+        os_type = get_os_type()
+        if os_type == "linux" and shutil.which("pkexec"):
+            pkg_mgr = (
+                "apt-get" if shutil.which("apt-get") else
+                "dnf" if shutil.which("dnf") else
+                "pacman" if shutil.which("pacman") else
+                "zypper" if shutil.which("zypper") else None
+            )
+            retries = getattr(self, "_install_retries", 0)
+            if pkg_mgr and retries < 1:
+                self._install_retries = retries + 1
+                retry = messagebox.askyesno(
+                    "Coba pkexec?",
+                    f"Auto-install gagal (mungkin perlu password sudo):\n\n{msg}\n\n"
+                    f"Coba lagi dengan pkexec (password prompt GUI)?"
+                )
+                if retry:
+                    self.status_var.set("Menginstall Node.js via pkexec...")
+                    self.root.config(cursor="watch")
+
+                    def pkexec_worker():
+                        ok, m = install_nodejs_with_pkexec(pkg_mgr)
+                        self.root.after(0, lambda: self._install_done(name, ok, m))
+
+                    threading.Thread(target=pkexec_worker, daemon=True).start()
+                    return
+
+        messagebox.showerror("Instalasi Gagal", f"{msg}\n\nSilakan install Node.js manual dari https://nodejs.org")
+        self.status_var.set(f"[{name}] GAGAL - Node.js belum terinstal")
 
     # --- Restart Claude Desktop ---
     def restart_claude(self):
@@ -644,10 +1144,6 @@ class MCPManagerApp:
         self.status_var.set(msg)
         if not ok:
             messagebox.showwarning("Restart", msg)
-
-    def clear_form(self):
-        self.name_var.set("")
-        self.json_text.delete("1.0", "end")
 
     def run(self):
         self.root.mainloop()
