@@ -73,18 +73,32 @@ def find_config_file():
     """Find claude_desktop_config.json on the system with deep search for Windows."""
     os_type = get_os_type()
     paths = KNOWN_CONFIG_PATHS.get(os_type, [])
-    
+
+    # 0. Windows MSIX/Store install reads ONLY the virtualized path.
+    #    If a Claude_* package folder exists, that install is the active one —
+    #    prefer it over %APPDATA% (which we may have auto-created empty before).
+    if os_type == "windows":
+        packages_dir = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Packages")
+        if os.path.isdir(packages_dir):
+            for folder in os.listdir(packages_dir):
+                if folder.lower().startswith("claude"):
+                    msix_path = os.path.join(
+                        packages_dir, folder, "LocalCache", "Roaming", "Claude", CONFIG_FILENAME
+                    )
+                    if os.path.isfile(msix_path):
+                        return msix_path
+
     # 1. Check known paths first
     for path in paths:
         if os.path.isfile(path):
             return path
-            
+
     # 2. Windows Deep Search: cover standard + MSIX (Store) install
     if os_type == "windows":
         local_appdata = os.path.expandvars(r"%LOCALAPPDATA%")
         appdata = os.path.expandvars(r"%APPDATA%")
         keywords = ["Claude", "AnthropicClaude", "claude-desktop"]
-        
+
         # MSIX/Store path: Packages\Claude_xxx\LocalCache\Roaming\Claude\
         packages_dir = os.path.join(local_appdata, "Packages")
         if os.path.isdir(packages_dir):
@@ -95,7 +109,7 @@ def find_config_file():
                     )
                     if os.path.isfile(msix_path):
                         return msix_path
-        
+
         # General deep search (max depth 4)
         for root in [appdata, local_appdata]:
             if not os.path.isdir(root):
@@ -112,6 +126,15 @@ def find_config_file():
 
 def default_config_path():
     """Default path for this OS (used for creation)."""
+    # Store/MSIX install: create inside the virtualized path, not %APPDATA%
+    if get_os_type() == "windows":
+        packages_dir = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Packages")
+        if os.path.isdir(packages_dir):
+            for folder in os.listdir(packages_dir):
+                if folder.lower().startswith("claude"):
+                    return os.path.join(
+                        packages_dir, folder, "LocalCache", "Roaming", "Claude", CONFIG_FILENAME
+                    )
     return DEFAULT_CREATE_PATH[get_os_type()]
 
 
@@ -452,14 +475,30 @@ def check_mcp_connection(entry, timeout=60):
     # 3. Polling loop: monitor stderr early for server errors, then send init
     import time
     import select
-    
+
     response_data = b""
     err_data = b""
     request_sent = False
     start = time.time()
     deadline = start + timeout
 
-    # Set non-blocking on pipes so we never hang
+    # Windows pipes have no non-blocking mode: use reader threads instead,
+    # otherwise a blocking read() hangs the loop past the deadline.
+    win_buf = {"out": [], "err": []}
+    if sys.platform == "win32":
+        def _pump(pipe, key):
+            try:
+                while True:
+                    chunk = pipe.read(4096)
+                    if not chunk:
+                        break
+                    win_buf[key].append(chunk)
+            except Exception:
+                pass
+        threading.Thread(target=_pump, args=(proc.stdout, "out"), daemon=True).start()
+        threading.Thread(target=_pump, args=(proc.stderr, "err"), daemon=True).start()
+
+    # Set non-blocking on pipes so we never hang (POSIX only)
     if sys.platform != "win32":
         import fcntl
         for pipe in (proc.stdout, proc.stderr):
@@ -498,12 +537,7 @@ def check_mcp_connection(entry, timeout=60):
                                     f"Ini masalah server/token/authorization, bukan koneksi lokal."
                                 )
                 else:
-                    try:
-                        chunk = proc.stderr.read(4096)
-                        if chunk:
-                            err_data += chunk
-                    except Exception:
-                        pass
+                    err_data = b"".join(win_buf["err"])
             except Exception:
                 pass
 
@@ -529,12 +563,7 @@ def check_mcp_connection(entry, timeout=60):
                         if chunk:
                             response_data += chunk
                 else:
-                    try:
-                        chunk = proc.stdout.read(4096)
-                        if chunk:
-                            response_data += chunk
-                    except Exception:
-                        pass
+                    response_data = b"".join(win_buf["out"])
             except Exception:
                 pass
 
@@ -567,12 +596,18 @@ def check_mcp_connection(entry, timeout=60):
             pass
 
     # If we got here, no valid response received
-    try:
-        stdout, stderr = proc.communicate(timeout=5)
-        response_data += stdout
-        err_data += stderr
-    except Exception:
-        pass
+    if sys.platform == "win32":
+        # reader threads own the pipes; communicate() would deadlock with them
+        time.sleep(0.3)
+        response_data = b"".join(win_buf["out"])
+        err_data = b"".join(win_buf["err"])
+    else:
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+            response_data += stdout
+            err_data += stderr
+        except Exception:
+            pass
 
     err = err_data.decode(errors="replace").strip()
     output = response_data.decode(errors="replace")
@@ -605,6 +640,14 @@ def find_claude_executable():
         ):
             if os.path.isfile(p):
                 return p
+        # Store/MSIX install: exe is permission-locked inside WindowsApps,
+        # launch via AppsFolder URI instead. ponytail: AppId assumed "Claude";
+        # if some installs fail to launch, resolve via Get-StartApps.
+        packages_dir = os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Packages")
+        if os.path.isdir(packages_dir):
+            for folder in os.listdir(packages_dir):
+                if folder.lower().startswith("claude"):
+                    return f"shell:AppsFolder\\{folder}!Claude"
         return None
     if sys.platform == "darwin":
         return "/Applications/Claude.app"
@@ -615,7 +658,8 @@ def quit_claude_desktop():
     """Ask Claude Desktop to quit gracefully. Returns True if a quit command ran."""
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/IM", "Claude.exe"], capture_output=True, timeout=15)
+            subprocess.run(["taskkill", "/IM", "Claude.exe"], capture_output=True, timeout=15,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
             return True
         if sys.platform == "darwin":
             subprocess.run(["osascript", "-e", 'tell application "Claude" to quit'],
@@ -638,7 +682,10 @@ def launch_claude_desktop():
         return False, "Executable Claude Desktop tidak ditemukan. Silakan buka manual."
     try:
         if sys.platform == "win32":
-            subprocess.Popen([exe], cwd=os.path.dirname(exe))
+            if exe.startswith("shell:"):
+                subprocess.Popen(["explorer.exe", exe])
+            else:
+                subprocess.Popen([exe], cwd=os.path.dirname(exe))
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-a", exe])
         else:
